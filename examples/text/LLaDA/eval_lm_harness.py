@@ -67,10 +67,32 @@ class LLaDAEvalHarness(LM):
             eta: The eta for the diffusion process.
         '''
         super().__init__()
-        self.device = torch.device(device)
+
+        accelerator = accelerate.Accelerator()
+        if accelerator.num_processes > 1:
+            self.accelerator = accelerator
+        else:
+            self.accelerator = None
+        
+        model_kwargs = {}
+        if self.accelerator is not None:
+            model_kwargs.update({'device_map': {'': f'{self.accelerator.device}'}})
+
         self.is_instruct_ft = 'Instruct' in model_path
-        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16,)
-        self.model.eval().to(self.device)
+        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16, **model_kwargs)
+        self.model.eval()
+
+        self.device = torch.device(device)
+        if self.accelerator is not None:
+            self.model = self.accelerator.prepare(self.model)
+            self.device = torch.device(f'{self.accelerator.device}')
+            self._rank = self.accelerator.local_process_index
+            self._world_size = self.accelerator.num_processes
+        else:
+            self.model = self.model.to(device)
+            self._rank = 0
+            self._world_size = 1
+
         self.mask_id = mask_id
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
@@ -90,6 +112,9 @@ class LLaDAEvalHarness(LM):
         print(f'num_steps: {num_steps}')
         print(f'tau: {tau}')
         print(f'eta: {eta}')
+        if self.accelerator is not None:
+            print(f'Running with accelerate on {self.accelerator.num_processes} processes')
+            print(f'Local process index: {self._rank}')
     
     @property
     def rank(self):
@@ -336,15 +361,3 @@ if __name__ == "__main__":
     set_seed(1234)
     cli_evaluate()
     
-"""
-
-CUDA_VISIBLE_DEVICES=1 HF_ALLOW_CODE_EVAL=1 \
-python eval_lm_harness.py \
---tasks gsm8k \
---model llada_dist \
---confirm_run_unsafe_code \
---batch_size 12 \
---output_path ./results/gsm8k/ \
---model_args model_path="GSAI-ML/LLaDA-8B-Base",mc_num=12,num_steps=256,tau=0.0,max_length=256,eta=1.0
-
-"""
