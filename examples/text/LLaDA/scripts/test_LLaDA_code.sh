@@ -1,6 +1,4 @@
-export HF_HOME=/data/shuibai/huggingface
-export TRANSFORMERS_CACHE=/data/shuibai/huggingface
-export HF_DATASETS_CACHE=/data/shuibai/huggingface
+export HF_ALLOW_CODE_EVAL=1
 
 #Args for NVIDIA A100-PCIE-40GB    
 

@@ -3,9 +3,9 @@ import numpy as np
 import torch.nn.functional as F
 
 from transformers import AutoTokenizer, AutoModel
-from path_planning.p2 import p2_sampling
+from path_planning.p2 import *
 from path_planning.utils import seed_everything
-
+from LLaDA_hf.modeling_llada import LLaDAModelLM
 
 class ModelWrapper:
     """Wrapper for the model to handle logits processing."""
@@ -21,7 +21,7 @@ def main():
     device = 'cuda'
     seed_everything(42)  # For reproducibility
 
-    model = AutoModel.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True, torch_dtype=torch.bfloat16).to(device).eval()
+    model = LLaDAModelLM.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', torch_dtype=torch.bfloat16).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True)
     model_wrapper = ModelWrapper(model)
 
@@ -43,12 +43,12 @@ def main():
     print(f"Input shape: {input_ids.shape}, Full sequence shape: {xt.shape}")
     
     
-    sampled_xt = p2_sampling(
+    sampled_xt = p2_plus_sampling(
         xt=xt,
         model=model_wrapper,
         mask_id=mask_id,
-        num_steps=100,
-        tau=0.0,
+        num_steps=128,
+        tau=0.,
     )
     print(f'prompt: {prompt}')
     print(f'generated: {tokenizer.batch_decode(sampled_xt[:, input_ids.shape[1]:], skip_special_tokens=True)[0]}')

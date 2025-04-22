@@ -86,6 +86,85 @@ def p2_sampling(
     xt[xt == mask_id] = x0[xt == mask_id]
     return xt 
 
+import torch
+from typing import Any
+
+import torch
+from typing import Any
+import math
+
+@torch.inference_mode()
+@torch.cuda.amp.autocast()
+def p2_plus_sampling(
+    xt: torch.Tensor,
+    model: Any,
+    mask_id: int,
+    num_steps: int | None = None,
+    tau: float = 1.0,
+    **kwargs: Any
+) -> torch.Tensor:
+    """
+    P2+ sampling with fixed decoding order.
+    Assumes all samples in the batch have:
+      - identical initial xt
+      - the same number of masked tokens
+      - the same decoding order
+
+    Args:
+        xt: Tensor of shape (B, L) with masked tokens.
+        model: Callable that outputs logits from xt.
+        mask_id: Token ID used for masking.
+        num_steps: Number of decoding iterations. If None, decode one token per step.
+        tau: Temperature for sampling.
+
+    Returns:
+        xt: Fully decoded tensor of shape (B, L).
+    """
+    B, L = xt.shape
+    device = xt.device
+
+    # 1. Identify masked positions — shared across all samples
+    mask_positions = (xt[0] == mask_id)     # (L,)
+    num_masks = mask_positions.sum().item()
+    if num_masks == 0:
+        return xt
+
+    # 2. Validate or infer number of decoding steps
+    if num_steps is None:
+        num_steps = num_masks
+    elif not (1 <= num_steps <= num_masks):
+        raise ValueError(
+            f"num_steps must be in [1, {num_masks}], got {num_steps}"
+        )
+
+    # 3. Initial forward pass and decoding order
+    logits = model(xt).double()                        # (B, L, V)
+    x0, scores, _ = stochastic_sample_from_categorical(logits, temperature=tau)
+    scores = scores[0]                                 # (L,)
+    masked_scores = torch.where(mask_positions, scores, torch.tensor(-float('inf'), device=device))
+    decoding_order = torch.argsort(masked_scores, descending=True)  # (L,)
+    masked_indices = decoding_order[:num_masks]        # Only the masked ones, sorted
+
+    # 4. Compute per-step split
+    step_size = math.ceil(num_masks / num_steps)
+    step_ranges = [
+        masked_indices[i * step_size : min((i + 1) * step_size, num_masks)]
+        for i in range(num_steps)
+    ]
+
+    # 5. Iterative decoding (shared across batch)
+    batch_idx = torch.arange(B, device=device).unsqueeze(1)   # (B, 1)
+    for pos_ids in step_ranges:
+        if len(pos_ids) == 0:
+            continue
+        logits = model(xt).double()
+        x0, _, _ = stochastic_sample_from_categorical(logits, temperature=tau)
+        pos_ids = pos_ids.to(device)
+        pos_ids_expand = pos_ids.unsqueeze(0).expand(B, -1)  # (B, K)
+        xt[batch_idx.expand_as(pos_ids_expand), pos_ids_expand] = x0[batch_idx.expand_as(pos_ids_expand), pos_ids_expand]
+
+    return xt
+
 from functools import partial
 
 ancestral_sampling = partial(
@@ -158,3 +237,7 @@ Returns:
 
 
 
+ancestral_sampling = partial(
+    dfm_sampling,
+    eta=0,
+)

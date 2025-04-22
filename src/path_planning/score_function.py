@@ -44,7 +44,7 @@ def random_score(logits: torch.Tensor, x0: torch.Tensor) -> torch.Tensor:
     Returns:
         Tensor of shape (batch_size, seq_len) - Random log scores for each position
     """
-    return torch.rand_like(x0).log()
+    return torch.rand_like(x0.float()).log()
 
 
 def diff_top2(logits: torch.Tensor, x0: torch.Tensor) -> torch.Tensor:
