@@ -102,6 +102,80 @@ sampled_sequence = p2_sampling(
 )
 ```
 
+## Minimal P2-self-Planning Implementation
+```python
+
+import torch
+from tqdm import tqdm
+from typing import Callable, Tuple, Any
+
+
+def topk_masking(scores: torch.Tensor, cutoff_len: torch.Tensor, mode: str = "lowest") -> torch.Tensor:
+    """Generate a mask selecting the top-k lowest or highest elements per row."""
+    sorted_scores = scores.sort(dim=-1, descending=(mode == "highest")).values
+    cutoff = sorted_scores.gather(dim=-1, index=cutoff_len)
+    return (scores >= cutoff) if mode == "highest" else (scores < cutoff)
+
+
+def sample_categorical(
+    logits: torch.Tensor, temperature: float = 1.0, noise_scale: float = 1.0
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Sample from a categorical distribution with optional Gumbel noise.
+    Returns sampled tokens, their scores, and the noised logits.
+    """
+    logits = logits.to(torch.float64)
+    if temperature > 0:
+        gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits) + 1e-8) + 1e-8)
+        logits = logits / temperature + noise_scale * gumbel_noise
+    log_probs = logits.log_softmax(dim=-1)
+    scores, tokens = log_probs.max(dim=-1)
+    return tokens, scores.to(logits.dtype), logits.to(logits.dtype)
+
+
+@torch.inference_mode()
+@torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+def p2_sampling(
+    xt: torch.Tensor,
+    model: Any,
+    mask_id: int,
+    num_steps: int,
+    tau: float = 1.0,
+    kappa_fn: Callable[[float], float] = lambda t: t,
+    eta: float = 1.0,
+    **kwargs
+) -> torch.Tensor:
+    """
+    P2 Sampling implementation for discrete diffusion models.
+    Reference: https://arxiv.org/pdf/2502.03540
+    """
+    dt = 1 / num_steps
+    fix_mask = (xt != mask_id)
+
+    for i in tqdm(range(1, num_steps + 1)):
+        t = i * dt
+        kappa_t = kappa_fn(t)
+
+        logits = model(xt).double()
+        last_mask = (xt == mask_id)
+        unmask_t = ~last_mask & ~fix_mask
+
+        x0, score, _ = sample_categorical(logits, temperature=tau)
+        score = score.masked_fill(fix_mask, float("inf"))
+        score[unmask_t] *= eta
+
+        num_to_mask = ((~fix_mask).sum(dim=1, keepdim=True).float() * (1 - kappa_t)).long()
+        to_mask = topk_masking(score, num_to_mask, mode="lowest")
+
+        xt[to_mask] = mask_id
+        mask_2_x0 = last_mask & ~to_mask
+        xt[mask_2_x0] = x0[mask_2_x0]
+
+    xt[xt == mask_id] = x0[xt == mask_id]
+    return xt
+
+```
+
 ## Appreciation
 
 The code is based on the following repository:
